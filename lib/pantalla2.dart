@@ -17,7 +17,7 @@ class _Pantalla2State extends State<Pantalla2> {
   Map<String, dynamic>? weatherData;
   bool isLoading = true;
   double? etc; // Evapotranspiración del cultivo
-  String selectedEspecie = 'Palta'; // Especie por defecto seleccionada
+  String selectedEspecie = 'Palta'; //
 
   // Lista de especies disponibles
   List<String> especiesCultivo = ['Palta', 'Maíz', 'Trigo', 'Tomate', 'Lechuga'];
@@ -36,7 +36,7 @@ class _Pantalla2State extends State<Pantalla2> {
     final data = await apiService.fetchWeatherData();
     setState(() {
       weatherData = data;
-      etc = _calculateEtcForPalta(); // Calcular ETc por defecto para Palta
+      etc = _calculateEtcForPalta();
       isLoading = false;
     });
   }
@@ -70,7 +70,7 @@ class _Pantalla2State extends State<Pantalla2> {
         title: Text(appBarTitle),
       ),
       body: isLoading
-          ? Center(child: CircularProgressIndicator()) // Muestra un indicador de carga mientras se obtienen los datos
+          ? Center(child: CircularProgressIndicator())
           : Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -81,7 +81,7 @@ class _Pantalla2State extends State<Pantalla2> {
               style: TextStyle(fontSize: 18, color: Colors.white),
             ),
             SizedBox(height: 16),
-            // Dropdown para cambiar la especie de cultivo
+
             DropdownButton<String>(
               dropdownColor: Colors.grey[800],
               isExpanded: true,
@@ -101,21 +101,21 @@ class _Pantalla2State extends State<Pantalla2> {
                 setState(() {
                   selectedEspecie = newEspecie!;
                   if (selectedEspecie == 'Palta') {
-                    etc = _calculateEtcForPalta(); // Recalcular la ETc para Palta
+                    etc = _calculateEtcForPalta();
                   }
-                  // Si tienes otras especies, agrega más lógica para calcular la ETc correspondiente
+
                 });
               },
             ),
             SizedBox(height: 24),
-            // Mostrar los resultados
+
             if (etc != null) ...[
               Text(
                 "La ETc es: ${etc!.toStringAsFixed(2)} mm",
                 style: TextStyle(fontSize: 20, color: Colors.white),
               ),
               SizedBox(height: 16),
-              // Mostrar la diferencia de agua
+
               Text(
                 _calculateWaterDifference() >= 0
                     ? "Falta ${_calculateWaterDifference().toStringAsFixed(2)} mm de agua."

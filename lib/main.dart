@@ -26,9 +26,9 @@ class _HomePageState extends State<HomePage> {
   Map<String, dynamic>? weatherData;
   bool isLoading = true;
   double? etc; // Evapotranspiración del cultivo
-  final double idealWater = 5.0; // Valor ideal de agua en mm, que se puede ajustar
+  final double idealWater = 5.0;
 
-  // Aquí simulamos la cantidad de agua medida para cada dispositivo Arduino
+
   final Map<String, double> arduinoWaterLevels = {
     'Arduino 1': 3.0, // ejemplo de mm de agua medida
     'Arduino 2': 5.0, // ejemplo de mm de agua medida
@@ -46,7 +46,7 @@ class _HomePageState extends State<HomePage> {
     ApiService apiService = ApiService();
     final data = await apiService.fetchWeatherData();
     if (data != null) {
-      // Supongamos que 'temperature_2m' y 'uv_index' son listas de valores horarios
+
       double temperatureMean = _calculateMean(data['hourly']['temperature_2m']);
       double uvIndexMean = _calculateMean(data['hourly']['uv_index']);
 
@@ -93,7 +93,7 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     double promedioDiferenciaAgua = _calculateAverageWaterDifference();
-    double promedioETc = etc ?? 0.0; // Usamos el valor de ETc calculado
+    double promedioETc = etc ?? 0.0;
 
     return Scaffold(
       appBar: AppBar(
@@ -102,13 +102,13 @@ class _HomePageState extends State<HomePage> {
           IconButton(
             icon: Icon(Icons.search),
             onPressed: () {
-              // Acción de búsqueda
+
             },
           ),
         ],
       ),
       body: isLoading
-          ? Center(child: CircularProgressIndicator()) // Indicador de carga
+          ? Center(child: CircularProgressIndicator()) //
           : Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -199,13 +199,13 @@ class _HomePageState extends State<HomePage> {
             IconButton(
               icon: Icon(Icons.home),
               onPressed: () {
-                // Acción de botón de inicio
+
               },
             ),
             IconButton(
               icon: Icon(Icons.delete),
               onPressed: () {
-                // Acción de botón de eliminar
+
               },
             ),
           ],
@@ -278,7 +278,7 @@ class _HomePageState extends State<HomePage> {
                 backgroundColor: Colors.grey,
               ),
               SizedBox(height: 10),
-              // Uso de Expanded para evitar desbordamiento horizontal
+
               Expanded(
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround, // Alineación lateral
@@ -286,24 +286,24 @@ class _HomePageState extends State<HomePage> {
                     Flexible(
                       child: Chip(
                         label: Text(
-                          etc != null ? ' ${etc!.toStringAsFixed(2)} mm' : 'Cargando...', // Mostrar ETc calculada o mensaje de carga
-                          style: TextStyle(color: Colors.white, fontSize: 8), // Tamaño de texto ajustado
-                          overflow: TextOverflow.ellipsis, // Asegura que el texto no se desborde
+                          etc != null ? ' ${etc!.toStringAsFixed(2)} mm' : 'Cargando...',
+                          style: TextStyle(color: Colors.white, fontSize: 8),
+                          overflow: TextOverflow.ellipsis,
                         ),
                         backgroundColor: Colors.purple,
-                        padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 12.0), // Padding ajustado para más espacio
+                        padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 12.0),
                       ),
                     ),
-                    SizedBox(width: 8), // Espacio entre los chips
+                    SizedBox(width: 8),
                     Flexible(
                       child: Chip(
                         label: Text(
                           '${waterDifference.toStringAsFixed(1)}',
-                          style: const TextStyle(color: Colors.white, fontSize:12), // Tamaño de texto ajustado
-                          overflow: TextOverflow.ellipsis, // Asegura que el texto no se desborde
+                          style: const TextStyle(color: Colors.white, fontSize:12),
+                          overflow: TextOverflow.ellipsis,
                         ),
                         backgroundColor: Colors.purple,
-                        padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 12.0), // Padding ajustado para más espacio
+                        padding: EdgeInsets.symmetric(vertical: 6.0, horizontal: 12.0),
                       ),
                     ),
                   ],
