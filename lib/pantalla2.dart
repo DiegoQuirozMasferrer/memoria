@@ -1,128 +1,235 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'api_service.dart';
 
 class Pantalla2 extends StatefulWidget {
-  final String initialTitle;
+  final String stationId;
+  final String recentDate;
 
-  Pantalla2({required this.initialTitle});
+  Pantalla2({required this.stationId, required this.recentDate});
 
   @override
   _Pantalla2State createState() => _Pantalla2State();
 }
 
 class _Pantalla2State extends State<Pantalla2> {
-  String? selectedArduino;
-  List<String> arduinoList = ['Arduino Uno', 'Arduino Mega', 'Arduino Nano'];
-  late String appBarTitle;
-  Map<String, dynamic>? weatherData;
   bool isLoading = true;
-  double? etc; // Evapotranspiración del cultivo
-  String selectedEspecie = 'Palta'; //
+  Map<String, dynamic>? stationData;
+  num? temperature;
+  num? humidity;
+  num? windSpeed;
+  double? etc;
+  num? solarRadiation;
+  num? soilHumidity;
 
-  // Lista de especies disponibles
-  List<String> especiesCultivo = ['Palta', 'Maíz', 'Trigo', 'Tomate', 'Lechuga'];
+  final num waterAvailableBase = 5.0; // Base de agua disponible (mm/día)
+  double? waterNeed;
 
-  final double aguaMedida = 3.5; // Ejemplo de agua medida en mm (simulada)
+  // Especies vegetales y selección actual
+  final List<String> species = ['Paltos', 'Papa', 'Tomate', 'Lechuga'];
+  String selectedSpecies = 'Paltos';
 
   @override
   void initState() {
     super.initState();
-    appBarTitle = widget.initialTitle;
-    _fetchWeatherData();
+    _fetchStationData();
   }
 
-  Future<void> _fetchWeatherData() async {
-    ApiService apiService = ApiService();
-    final data = await apiService.fetchWeatherData();
+  Future<void> _fetchStationData() async {
     setState(() {
-      weatherData = data;
-      etc = _calculateEtcForPalta();
+      isLoading = true;
+    });
+
+    ApiService apiService = ApiService();
+    final data = await apiService.fetchStationDataByDate(
+        widget.stationId, widget.recentDate);
+    print('Datos de la estación: $data');
+
+    if (data != null && data.containsKey('archivo')) {
+      final archivo = data['archivo'] as List<dynamic>;
+
+      if (archivo.isNotEmpty) {
+        final firstEntry = archivo.first as Map<String, dynamic>;
+
+        if (firstEntry.containsKey('sensors')) {
+          final sensors = firstEntry['sensors'] as List<dynamic>;
+
+          // BME280_ext
+          final bme280Ext = sensors.firstWhere(
+                (sensor) => sensor['name'] == 'BME280_ext',
+            orElse: () => null,
+          );
+
+          if (bme280Ext != null &&
+              bme280Ext.containsKey('measurements') &&
+              bme280Ext['measurements'] != null) {
+            final measurements = bme280Ext['measurements'] as List<dynamic>;
+
+            temperature = _getMeasurementValue(measurements, 'temperature');
+            humidity = _getMeasurementValue(measurements, 'humidity');
+          }
+
+          // BME280_int
+          final bme280Int = sensors.firstWhere(
+                (sensor) => sensor['name'] == 'BME280_int',
+            orElse: () => null,
+          );
+
+          if (bme280Int != null &&
+              bme280Int.containsKey('measurements') &&
+              bme280Int['measurements'] != null) {
+            final measurements = bme280Int['measurements'] as List<dynamic>;
+            soilHumidity = _getMeasurementValue(measurements, 'humidity');
+          }
+
+          // WindSpeed_side
+          final windSpeedSensor = sensors.firstWhere(
+                (sensor) => sensor['name'] == 'WindSpeed_side',
+            orElse: () => null,
+          );
+
+          if (windSpeedSensor != null &&
+              windSpeedSensor.containsKey('measurements') &&
+              windSpeedSensor['measurements'] != null) {
+            final measurements =
+            windSpeedSensor['measurements'] as List<dynamic>;
+            windSpeed = _getMeasurementValue(measurements, 'speed');
+          }
+
+          // BH1750
+          if (firstEntry.containsKey('nodes')) {
+            final nodes = firstEntry['nodes'] as List<dynamic>;
+
+            for (final node in nodes) {
+              final sensors = node['sensors'] as List<dynamic>;
+
+              final bh1750Sensor = sensors.firstWhere(
+                    (sensor) => sensor['name'] == 'BH1750',
+                orElse: () => null,
+              );
+
+              if (bh1750Sensor != null &&
+                  bh1750Sensor.containsKey('measurements') &&
+                  bh1750Sensor['measurements'] != null) {
+                final measurements =
+                bh1750Sensor['measurements'] as List<dynamic>;
+                solarRadiation = _getMeasurementValue(measurements, 'light')! *
+                    0.0079; // Conversión a W/m²
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    _recalculateETc();
+    _recalculateWaterNeed();
+
+    setState(() {
+      stationData = data;
       isLoading = false;
     });
   }
 
-  // Función para calcular la ETc para Palta
-  double _calculateEtcForPalta() {
-    double kcPalta = 0.7;
-    double eto = (weatherData != null)
-        ? (_calculateMean(weatherData!['hourly']['temperature_2m']) * 0.1 +
-        _calculateMean(weatherData!['hourly']['uv_index']) * 0.05)
-        : 0.0;
-    return eto * kcPalta;
+  num? _getMeasurementValue(List<dynamic> measurements, String type) {
+    final measurement = measurements.firstWhere(
+          (m) => m['type'] == type,
+      orElse: () => null,
+    );
+    return measurement != null ? measurement['value'] as num : null;
   }
 
-  // Función para calcular la diferencia de agua
-  double _calculateWaterDifference() {
-    return aguaMedida - (etc ?? 0.0);
+  void _recalculateETc() {
+    if (temperature != null &&
+        humidity != null &&
+        windSpeed != null &&
+        solarRadiation != null) {
+      etc = calculateETc(
+          selectedSpecies, temperature!, humidity!, windSpeed!, solarRadiation!);
+    }
   }
 
-  double _calculateMean(List<dynamic> dataList) {
-    if (dataList.isEmpty) return 0.0;
-    double sum = dataList.fold(0.0, (previous, current) => previous + current);
-    return sum / dataList.length;
+  void _recalculateWaterNeed() {
+    if (etc != null) {
+      final adjustedWaterAvailable = calculateAdjustedWaterAvailable(
+          waterAvailableBase, soilHumidity);
+      waterNeed = etc! - adjustedWaterAvailable;
+    }
+  }
+
+  double calculateAdjustedWaterAvailable(num base, num? soilHumidity) {
+    if (soilHumidity == null) return base.toDouble();
+    return base * (soilHumidity / 100);
+  }
+
+  double calculateETc(String selectedSpecies, num temperature, num humidity,
+      num windSpeed, num solarRadiation) {
+    Map<String, double> cropCoefficients = {
+      'Paltos': 0.7,
+      'Papa': 0.85,
+      'Tomate': 1.05,
+      'Lechuga': 0.95,
+    };
+
+    double kc = cropCoefficients[selectedSpecies] ?? 0.7;
+
+    double et0 = (0.0023 * (temperature + 17.8) * sqrt(windSpeed) *
+        solarRadiation) *
+        (100 - humidity);
+
+    return et0 * kc;
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text(appBarTitle),
+        title: Text('Estación: ${widget.stationId}'),
       ),
       body: isLoading
           ? Center(child: CircularProgressIndicator())
           : Padding(
         padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ListView(
           children: [
-            Text(
-              'Seleccione la especie de cultivo',
-              style: TextStyle(fontSize: 18, color: Colors.white),
-            ),
-            SizedBox(height: 16),
-
             DropdownButton<String>(
-              dropdownColor: Colors.grey[800],
+              value: selectedSpecies,
               isExpanded: true,
-              value: selectedEspecie,
-              icon: Icon(Icons.arrow_drop_down, color: Colors.white),
-              underline: Container(
-                height: 1,
-                color: Colors.white,
-              ),
-              items: especiesCultivo.map((String especie) {
+              items: species.map((String species) {
                 return DropdownMenuItem<String>(
-                  value: especie,
-                  child: Text(especie, style: TextStyle(color: Colors.white)),
+                  value: species,
+                  child: Text(species),
                 );
               }).toList(),
-              onChanged: (String? newEspecie) {
+              onChanged: (String? newValue) {
                 setState(() {
-                  selectedEspecie = newEspecie!;
-                  if (selectedEspecie == 'Palta') {
-                    etc = _calculateEtcForPalta();
-                  }
-
+                  selectedSpecies = newValue!;
+                  _recalculateETc();
+                  _recalculateWaterNeed();
                 });
               },
             ),
-            SizedBox(height: 24),
-
-            if (etc != null) ...[
-              Text(
-                "La ETc es: ${etc!.toStringAsFixed(2)} mm",
-                style: TextStyle(fontSize: 20, color: Colors.white),
-              ),
-              SizedBox(height: 16),
-
-              Text(
-                _calculateWaterDifference() >= 0
-                    ? "Falta ${_calculateWaterDifference().toStringAsFixed(2)} mm de agua."
-                    : "Exceso de ${(-_calculateWaterDifference()).toStringAsFixed(2)} mm de agua.",
-                style: TextStyle(fontSize: 18, color: Colors.white),
-              ),
-            ]
+            SizedBox(height: 16),
+            Text('Temperatura: ${temperature ?? "Sin datos"} °C'),
+            Text('Humedad: ${humidity ?? "Sin datos"} %'),
+            Text('Velocidad del viento: ${windSpeed ?? "Sin datos"} m/s'),
+            Text(
+                'Radiación solar: ${solarRadiation?.toStringAsFixed(2) ?? "Sin datos"} W/m²'),
+            Text('Humedad del suelo: ${soilHumidity ?? "Sin datos"} %'),
+            SizedBox(height: 16),
+            Text(
+              'Evapotranspiración del cultivo (${selectedSpecies}): ${etc?.toStringAsFixed(2) ?? "Sin datos"} mm/día',
+            ),
+            SizedBox(height: 16),
+            Text(
+              'Necesidad Hídrica: ${waterNeed?.toStringAsFixed(2) ?? "Sin datos"} mm/día',
+              style: TextStyle(
+                  color: waterNeed != null && waterNeed! > 0
+                      ? Colors.red
+                      : Colors.green,
+                  fontWeight: FontWeight.bold),
+            ),
           ],
         ),
       ),
