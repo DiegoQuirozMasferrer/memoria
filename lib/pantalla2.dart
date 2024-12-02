@@ -1,5 +1,8 @@
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'HistoryScreen.dart';
 import 'api_service.dart';
 
 class Pantalla2 extends StatefulWidget {
@@ -14,25 +17,56 @@ class Pantalla2 extends StatefulWidget {
 
 class _Pantalla2State extends State<Pantalla2> {
   bool isLoading = true;
-  Map<String, dynamic>? stationData;
   num? temperature;
   num? humidity;
+  num? humidity_int;
   num? windSpeed;
   double? etc;
   num? solarRadiation;
   num? soilHumidity;
+  num? kp;
+  String waterMessage = '';
 
   final num waterAvailableBase = 5.0; // Base de agua disponible (mm/día)
   double? waterNeed;
+  double? netDemandInM3; // Demanda neta en m³ por hectárea
+  double? irrigationTime; // Tiempo de riego (horas)
 
-  // Especies vegetales y selección actual
-  final List<String> species = ['Paltos', 'Papa', 'Tomate', 'Lechuga'];
-  String selectedSpecies = 'Paltos';
+  // Variables para el marco de plantación, tipo de riego y caudal
+  final TextEditingController plantingFrameController =
+  TextEditingController(text: '4.0');
+  final TextEditingController flowRateController = TextEditingController();
+  String irrigationType = 'Goteo'; // Tipo de riego por defecto
+  bool isFlowRateInLiters = true; // True: litros/hora, False: m³/hora
+
+  // Especies vegetales y selección actual con coeficientes Kc
+  final Map<String, double> speciesWithKc = {
+    'Palto': 0.7,
+    'Cerezo': 0.8,
+    'Parra': 0.65,
+    'Nogal': 0.75,
+    'Papa': 0.85,
+    'Tomate': 1.05,
+    'Vid': 0.8,
+
+  };
+  String selectedSpecies = 'Palto';
 
   @override
   void initState() {
     super.initState();
+    _loadSavedData();
     _fetchStationData();
+
+    // Agregar listeners para los controladores
+    plantingFrameController.addListener(() {
+      _recalculateNetDemand();
+      _recalculateIrrigationTime();
+    });
+
+    flowRateController.addListener(() {
+      _recalculateIrrigationTime();
+    });
   }
 
   Future<void> _fetchStationData() async {
@@ -43,8 +77,8 @@ class _Pantalla2State extends State<Pantalla2> {
     ApiService apiService = ApiService();
     final data = await apiService.fetchStationDataByDate(
         widget.stationId, widget.recentDate);
-    print('Datos de la estación: $data');
 
+    // Procesar datos
     if (data != null && data.containsKey('archivo')) {
       final archivo = data['archivo'] as List<dynamic>;
 
@@ -54,7 +88,7 @@ class _Pantalla2State extends State<Pantalla2> {
         if (firstEntry.containsKey('sensors')) {
           final sensors = firstEntry['sensors'] as List<dynamic>;
 
-          // BME280_ext
+          // Obtener datos de BME280_ext
           final bme280Ext = sensors.firstWhere(
                 (sensor) => sensor['name'] == 'BME280_ext',
             orElse: () => null,
@@ -68,21 +102,22 @@ class _Pantalla2State extends State<Pantalla2> {
             temperature = _getMeasurementValue(measurements, 'temperature');
             humidity = _getMeasurementValue(measurements, 'humidity');
           }
-
-          // BME280_int
+          // Obtener datos de BME280_int
           final bme280Int = sensors.firstWhere(
                 (sensor) => sensor['name'] == 'BME280_int',
             orElse: () => null,
           );
 
-          if (bme280Int != null &&
-              bme280Int.containsKey('measurements') &&
-              bme280Int['measurements'] != null) {
-            final measurements = bme280Int['measurements'] as List<dynamic>;
-            soilHumidity = _getMeasurementValue(measurements, 'humidity');
+          if (bme280Ext != null &&
+              bme280Ext.containsKey('measurements') &&
+              bme280Ext['measurements'] != null) {
+            final measurements = bme280Ext['measurements'] as List<dynamic>;
+
+            temperature = _getMeasurementValue(measurements, 'temperature');
+            humidity_int = _getMeasurementValue(measurements, 'humidity');
           }
 
-          // WindSpeed_side
+          // Obtener velocidad del viento de WindSpeed_side
           final windSpeedSensor = sensors.firstWhere(
                 (sensor) => sensor['name'] == 'WindSpeed_side',
             orElse: () => null,
@@ -96,7 +131,7 @@ class _Pantalla2State extends State<Pantalla2> {
             windSpeed = _getMeasurementValue(measurements, 'speed');
           }
 
-          // BH1750
+          // Obtener radiación solar del sensor BH1750
           if (firstEntry.containsKey('nodes')) {
             final nodes = firstEntry['nodes'] as List<dynamic>;
 
@@ -125,12 +160,31 @@ class _Pantalla2State extends State<Pantalla2> {
 
     _recalculateETc();
     _recalculateWaterNeed();
+    _recalculateNetDemand();
 
     setState(() {
-      stationData = data;
       isLoading = false;
     });
   }
+
+  Future<void> _addToHistory(double waterDemand) async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final List<String> history = prefs.getStringList('waterDemandHistory') ?? [];
+
+    final entry = {
+      'date': DateTime.now().toIso8601String(),
+      'waterDemand': waterDemand,
+    };
+
+    history.add(jsonEncode(entry)); // Añade la nueva entrada
+    await prefs.setStringList('waterDemandHistory', history); // Guarda en SharedPreferences
+  }
+
+
+
+
+
+
 
   num? _getMeasurementValue(List<dynamic> measurements, String type) {
     final measurement = measurements.firstWhere(
@@ -139,23 +193,156 @@ class _Pantalla2State extends State<Pantalla2> {
     );
     return measurement != null ? measurement['value'] as num : null;
   }
+  // Variable para almacenar el coeficiente de bandeja
 
+  double calculateKp(num windSpeed, double stationConfigurationFactor) {
+    return windSpeed * stationConfigurationFactor;
+  }
   void _recalculateETc() {
     if (temperature != null &&
         humidity != null &&
         windSpeed != null &&
         solarRadiation != null) {
+      // Calcular Kp
+      const double stationConfigurationFactor = 0.8; // Ejemplo de factor fijo
+      kp = calculateKp(windSpeed!, stationConfigurationFactor);
+
+      // Calcular ETc
       etc = calculateETc(
-          selectedSpecies, temperature!, humidity!, windSpeed!, solarRadiation!);
+        selectedSpecies,
+        temperature!,
+        humidity!,
+        windSpeed!,
+        solarRadiation!,
+      );
+
+      print('Kp calculado: ${kp?.toStringAsFixed(2)}');
+      print('ETc calculado: ${etc?.toStringAsFixed(2)} mm/día');
+    } else {
+      kp = null; // Si no hay datos, no se puede calcular
+      etc = null;
+      print('No se puede calcular ETc ni Kp: faltan datos necesarios.');
     }
   }
 
-  void _recalculateWaterNeed() {
-    if (etc != null) {
-      final adjustedWaterAvailable = calculateAdjustedWaterAvailable(
-          waterAvailableBase, soilHumidity);
-      waterNeed = etc! - adjustedWaterAvailable;
+
+  void
+  _recalculateWaterNeed() {
+    if (etc != null && etc != 0) {
+      // Calcula el agua disponible basada en la humedad del suelo
+      final adjustedWaterAvailable = calculateAdjustedWaterAvailable(waterAvailableBase, humidity_int);
+
+      // Calcula la necesidad hídrica
+      waterNeed = (etc! - adjustedWaterAvailable);
+
+      // Guarda la necesidad hídrica en el historial si es válida
+      if (waterNeed != null && waterNeed! > 0) {
+        _addToHistory(waterNeed!);
+      }
+
+      print('Necesidad hídrica calculada: ${waterNeed?.toStringAsFixed(2)} mm/día');
+    } else if (etc == 0) {
+      waterNeed = 0;
+      print('No es necesario regar.');
+    } else {
+      print('No se puede calcular la necesidad hídrica: ETc es nulo.');
     }
+  }
+
+  void _recalculateNetDemand() {
+    if (etc != null) {
+      // Marco de plantación en m² por planta
+      final plantingFrame = double.tryParse(plantingFrameController.text) ?? 0.0;
+      if (plantingFrame <= 0) {
+        setState(() {
+          netDemandInM3 = null;
+          waterMessage = 'Marco de plantación no válido.';
+        });
+        print('El marco de plantación no es válido.');
+        return;
+      }
+
+      // Número de plantas por hectárea
+      final plantsPerHa = 10000 / plantingFrame;
+
+      // Eficiencia del riego
+      final irrigationEfficiency = _getIrrigationEfficiency();
+
+      // Demanda neta ajustada en mm/día
+      final netDemandInMm = (etc! * plantsPerHa) / irrigationEfficiency;
+
+
+
+      // Convertir de mm/ha a m³/ha
+      setState(() {
+        netDemandInM3 = netDemandInMm * 0.01; // Conversión de mm a m³
+
+        if (netDemandInM3! <= 0) {
+          waterMessage = 'No es necesario regar las plantas.';
+        } else {
+          waterMessage = '';
+        }
+      });
+
+
+
+
+
+      _recalculateIrrigationTime();
+
+      print(
+          'Demanda neta ajustada calculada: ${netDemandInM3?.toStringAsFixed(2)} m³/día');
+    } else {
+      setState(() {
+        netDemandInM3 = null;
+      });
+      print('No se puede calcular la demanda neta ajustada: ETc es nulo.');
+      waterMessage = 'No se puede calcular la demanda neta ajustada: ETc es nulo.';
+    }
+  }
+
+
+  void _recalculateIrrigationTime() {
+    final flowRate = double.tryParse(flowRateController.text) ?? 0.0;
+
+    final plantingFrame = double.tryParse(plantingFrameController.text) ?? 0.0;
+
+    if (netDemandInM3 != null && flowRate > 0 && plantingFrame > 0) {
+      final plantsPerHa = 10000 / plantingFrame;
+      final demandPerPlant = netDemandInM3! / plantsPerHa;
+
+      if (isFlowRateInLiters) {
+        setState(() {
+          irrigationTime = (demandPerPlant * 1000) / flowRate;
+        });
+      } else {
+        setState(() {
+          irrigationTime = demandPerPlant / flowRate;
+        });
+      }
+
+      print('Tiempo de riego calculado por planta: ${irrigationTime?.toStringAsFixed(2)} horas');
+    } else {
+      setState(() {
+        irrigationTime = null;
+      });
+      print('No se puede calcular el tiempo de riego: valores inválidos.');
+    }
+  }
+
+
+  double calculateETc(String selectedSpecies, num temperature, num humidity, num windSpeed, num solarRadiation, {bool isNight = false}) {
+
+    if (isNight) {
+      print("Es de noche. Forzando ET0 a 0.");
+      return 0;
+    }
+
+    double kc = speciesWithKc[selectedSpecies] ?? 0.7; // Valor por defecto
+    double et0 = (0.0023 * (temperature + 17.8) * sqrt(windSpeed) * solarRadiation) * (100 - humidity);
+
+    print('Kc: ${kc.toStringAsFixed(2)} y ET0: ${et0.toStringAsFixed(2)}');
+    return et0 * kc;
   }
 
   double calculateAdjustedWaterAvailable(num base, num? soilHumidity) {
@@ -163,30 +350,68 @@ class _Pantalla2State extends State<Pantalla2> {
     return base * (soilHumidity / 100);
   }
 
-  double calculateETc(String selectedSpecies, num temperature, num humidity,
-      num windSpeed, num solarRadiation) {
-    Map<String, double> cropCoefficients = {
-      'Paltos': 0.7,
-      'Papa': 0.85,
-      'Tomate': 1.05,
-      'Lechuga': 0.95,
+  double _getIrrigationEfficiency() {
+    Map<String, double> irrigationEfficiencies = {
+      'Goteo': 0.90,
+      'Aspersión': 0.75,
+      'Gravedad': 0.55,
     };
+    return irrigationEfficiencies[irrigationType] ?? 0.90;
+  }
 
-    double kc = cropCoefficients[selectedSpecies] ?? 0.7;
+  Future<void> _loadSavedData() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    setState(() {
+      plantingFrameController.text = prefs.getString('plantingFrame') ?? '4.0';
+      irrigationType = prefs.getString('irrigationType') ?? 'Goteo';
+      selectedSpecies = prefs.getString('selectedSpecies') ?? 'Palto';
+    });
+  }
 
-    double et0 = (0.0023 * (temperature + 17.8) * sqrt(windSpeed) *
-        solarRadiation) *
-        (100 - humidity);
-
-    return et0 * kc;
+  Future<void> _saveData() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('plantingFrame', plantingFrameController.text);
+    await prefs.setString('irrigationType', irrigationType);
+    await prefs.setString('selectedSpecies', selectedSpecies);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+     return WillPopScope(
+        onWillPop: () async {
+      // Al interceptar el evento de regreso, envía los datos con Navigator.pop
+      Navigator.pop(
+        context,
+        {
+          'stationId': widget.stationId,
+          'waterNeed': waterNeed,
+          'etc': etc,
+
+        },
+      );
+      return false; // Evita que el sistema maneje el evento de back automáticamente.
+    },
+    child: Scaffold(
       appBar: AppBar(
         title: Text('Estación: ${widget.stationId}'),
+        actions: [
+          // Pantalla principal: añadir el SensorCard para Kp
+
+          IconButton(
+            icon: Icon(Icons.history),
+            onPressed: () async {
+
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => HistoryScreen(),
+                ),
+              );
+            },
+          ),
+        ],
       ),
+
       body: isLoading
           ? Center(child: CircularProgressIndicator())
           : Padding(
@@ -194,45 +419,212 @@ class _Pantalla2State extends State<Pantalla2> {
         child: ListView(
           children: [
             DropdownButton<String>(
-              value: selectedSpecies,
+              value: speciesWithKc.keys.contains(selectedSpecies)
+                  ? selectedSpecies
+                  : null,
               isExpanded: true,
-              items: species.map((String species) {
+              items: speciesWithKc.keys.map((String species) {
                 return DropdownMenuItem<String>(
                   value: species,
                   child: Text(species),
                 );
               }).toList(),
               onChanged: (String? newValue) {
+                if (newValue != null) {
+                  setState(() {
+                    selectedSpecies = newValue;
+                    _saveData();
+                    _recalculateETc();
+                    _recalculateWaterNeed();
+                    _recalculateNetDemand();
+                  });
+                }
+              },
+            ),
+            SizedBox(height: 16),
+            TextField(
+              controller: plantingFrameController,
+              keyboardType: TextInputType.number,
+              onChanged: (value) {
+                _saveData();
+                _recalculateNetDemand();
+              },
+              decoration: InputDecoration(
+                labelText: 'Marco de Plantación (m² por planta)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+
+            SizedBox(height: 16),
+            TextField(
+              controller: flowRateController,
+              keyboardType: TextInputType.number,
+              onChanged: (value) {
+                _recalculateIrrigationTime();
+              },
+              decoration: InputDecoration(
+                labelText:
+                isFlowRateInLiters ? 'Caudal (litros/hora)' : 'Caudal (m³/hora)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            SizedBox(height: 8),
+            SwitchListTile(
+              title: Text(isFlowRateInLiters ?   'Caudal (m³/hora)' : 'Caudal (litros/hora)'),
+              value: isFlowRateInLiters,
+              onChanged: (value) {
                 setState(() {
-                  selectedSpecies = newValue!;
-                  _recalculateETc();
-                  _recalculateWaterNeed();
+                  isFlowRateInLiters = value;
+                  _recalculateIrrigationTime();
                 });
               },
             ),
             SizedBox(height: 16),
-            Text('Temperatura: ${temperature ?? "Sin datos"} °C'),
-            Text('Humedad: ${humidity ?? "Sin datos"} %'),
-            Text('Velocidad del viento: ${windSpeed ?? "Sin datos"} m/s'),
-            Text(
-                'Radiación solar: ${solarRadiation?.toStringAsFixed(2) ?? "Sin datos"} W/m²'),
-            Text('Humedad del suelo: ${soilHumidity ?? "Sin datos"} %'),
-            SizedBox(height: 16),
-            Text(
-              'Evapotranspiración del cultivo (${selectedSpecies}): ${etc?.toStringAsFixed(2) ?? "Sin datos"} mm/día',
+            DropdownButton<String>(
+              value: irrigationType,
+              isExpanded: true,
+              items: ['Goteo', 'Aspersión', 'Gravedad']
+                  .map((String irrigation) {
+                return DropdownMenuItem<String>(
+                  value: irrigation,
+                  child: Text(irrigation),
+                );
+              }).toList(),
+              onChanged: (String? newValue) {
+                setState(() {
+                  irrigationType = newValue!;
+                  _saveData();
+                  _recalculateNetDemand();
+                });
+              },
             ),
-            SizedBox(height: 16),
-            Text(
-              'Necesidad Hídrica: ${waterNeed?.toStringAsFixed(2) ?? "Sin datos"} mm/día',
-              style: TextStyle(
-                  color: waterNeed != null && waterNeed! > 0
-                      ? Colors.red
-                      : Colors.green,
-                  fontWeight: FontWeight.bold),
+
+
+
+            SensorCard(
+              title: 'Necesidad Hídrica',
+              icon: Icons.water_drop,
+              value:
+              '${waterNeed?.toStringAsFixed(2) ?? "Sin datos"} mm/día',
+              color: Colors.blueAccent,
+            ),
+             // Muestra el mensaje de riego
+            SensorCard(
+              title: 'Demanda Neta Ajustada',
+              icon: Icons.calculate,
+              value: '${netDemandInM3?.toStringAsFixed(2) ?? "Sin datos"} m³/ha',
+              color: Colors.green,
+            ),
+            SensorCard(
+              title: 'Tiempo de Riego',
+              icon: Icons.timer,
+              value: '${irrigationTime?.toStringAsFixed(2) ?? (isFlowRateInLiters ?   'Caudal (litros/hora)':'Caudal (m³/hora)'  )}',
+              color: Colors.orange,
+            ),
+            _buildWaterMessage(),
+          ]
+
+          ,
+        ),
+      ),
+    ),
+    );
+  }
+  Widget _buildWaterMessage() {
+    return Padding(
+      padding: const EdgeInsets.all(8.0),
+      child: Text(
+        waterMessage,
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+          color: waterMessage.contains('No es necesario') ? Colors.green : Colors.red,
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+}
+
+class SensorCard extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final String value;
+  final Color color;
+
+  SensorCard({
+    required this.title,
+    required this.icon,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Colors.grey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 40,
+              color: color,
+            ),
+            SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  Text(
+                    value,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       ),
     );
   }
+  //historial
+
+
+
+
 }
+
+//historial
+class HistoryEntry {
+  final String date;
+  final double waterDemand;
+
+  HistoryEntry({required this.date, required this.waterDemand});
+
+  Map<String, dynamic> toJson() {
+    return {'date': date, 'waterDemand': waterDemand};
+  }
+
+  static HistoryEntry fromJson(Map<String, dynamic> json) {
+    return HistoryEntry(
+      date: json['date'],
+      waterDemand: (json['waterDemand'] as num).toDouble(),
+    );
+  }
+}
+
