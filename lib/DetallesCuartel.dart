@@ -180,7 +180,7 @@ class _DetallesCuartelState extends State<DetallesCuartel> {
                   style: TextStyle(fontSize: 16),
                 ),
                 Text(
-                  'Radiación Solar Extraterrestre: ${_calcularRadiacionExtraterrestre(widget.weatherData!)?.toStringAsFixed(2) ?? 'N/A'} MJ/m²/día',
+                  'Radiación Solar Extraterrestre: ${_calcularRadiacionExtraterrestre(widget.weatherData!).toStringAsFixed(2) ?? 'N/A'} MJ/m²/día',
                   style: TextStyle(fontSize: 16),
                 ),
                 SizedBox(height: 16),
